@@ -1,0 +1,12 @@
+[build]
+target = "./index.html"
+
+[tools]
+tailwindcss = "4.3.1"
+
+[watch]
+ignore = ["../backend"]
+
+[serve]
+port = 1420
+open = false

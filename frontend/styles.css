@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+@custom-variant dark (&:where(.dark, .dark *));
+
+@font-face {
+    font-family: "SN Pro";
+    font-weight: 200 900;
+    font-style: normal;
+    font-display: swap;
+    src: url("/public/fonts/SNPro-VariableFont_wght.ttf") format("truetype");
+}
+
+@theme {
+    --default-font-family: "SN Pro", var(--font-sans);
+
+    --color-background: var(--color-background);
+    --color-background-hover: var(--color-background-hover);
+    --color-input-border: var(--color-input-border);
+    --color-background-secondary: var(--color-background-secondary);
+    --color-text: var(--color-text);
+    --color-text-hover: var(--color-text-hover);
+    --color-toast: var(--color-toast);
+
+    --color-rich-cerulean-50: #ecf2f8;
+    --color-rich-cerulean-100: #d9e6f2;
+    --color-rich-cerulean-200: #b4cce4;
+    --color-rich-cerulean-300: #8eb2d7;
+    --color-rich-cerulean-400: #6899ca;
+    --color-rich-cerulean-500: #427fbd;
+    --color-rich-cerulean-600: #356697;
+    --color-rich-cerulean-700: #284c71;
+    --color-rich-cerulean-800: #1b334b;
+    --color-rich-cerulean-900: #0d1926;
+    --color-rich-cerulean-950: #09121a;
+
+    --color-cobalt-blue-50: #e5f1ff;
+    --color-cobalt-blue-100: #cce3ff;
+    --color-cobalt-blue-200: #99c7ff;
+    --color-cobalt-blue-300: #66abff;
+    --color-cobalt-blue-400: #338fff;
+    --color-cobalt-blue-500: #0073ff;
+    --color-cobalt-blue-600: #005ccc;
+    --color-cobalt-blue-700: #004599;
+    --color-cobalt-blue-800: #002e66;
+    --color-cobalt-blue-900: #001733;
+    --color-cobalt-blue-950: #001024;
+
+    --color-iron-grey-50: #f1f2f4;
+    --color-iron-grey-100: #e3e6e8;
+    --color-iron-grey-200: #c7ccd1;
+    --color-iron-grey-300: #abb3ba;
+    --color-iron-grey-400: #8f99a3;
+    --color-iron-grey-500: #737f8c;
+    --color-iron-grey-600: #5c6670;
+    --color-iron-grey-700: #454c54;
+    --color-iron-grey-800: #2e3338;
+    --color-iron-grey-900: #17191c;
+    --color-iron-grey-950: #101214;
+
+    --color-shadow-grey-50: #f1f2f3;
+    --color-shadow-grey-100: #e3e5e8;
+    --color-shadow-grey-200: #c7cbd1;
+    --color-shadow-grey-300: #acb2b9;
+    --color-shadow-grey-400: #9098a2;
+    --color-shadow-grey-500: #747e8b;
+    --color-shadow-grey-600: #5d656f;
+    --color-shadow-grey-700: #464c53;
+    --color-shadow-grey-800: #2e3238;
+    --color-shadow-grey-900: #17191c;
+    --color-shadow-grey-950: #101213;
+
+    --color-black-50: #f0f0f5;
+    --color-black-100: #e1e1ea;
+    --color-black-200: #c3c3d5;
+    --color-black-300: #a5a5c0;
+    --color-black-400: #8787ab;
+    --color-black-500: #696996;
+    --color-black-600: #545478;
+    --color-black-700: #3f3f5a;
+    --color-black-800: #2a2a3c;
+    --color-black-900: #15151e;
+    --color-black-950: #0f0f15;
+}
+
+@layer base {
+    html,
+    body {
+        @apply h-full;
+    }
+
+    body {
+        @apply bg-background text-text antialiased;
+    }
+
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: var(--color-iron-grey-400) transparent;
+    }
+
+    html[data-theme="light"] {
+        --color-background: var(--color-iron-grey-50);
+        --color-background-hover: var(--color-iron-grey-100);
+        --color-background-secondary: var(--color-iron-grey-100);
+        --color-input-border: var(--color-iron-grey-200);
+        --color-text: var(--color-iron-grey-950);
+        --color-text-hover: var(--color-iron-grey-900);
+        --color-toast: var(--color-rich-cerulean-100);
+    }
+
+    html[data-theme="dark"] {
+        --color-background: var(--color-iron-grey-950);
+        --color-background-hover: var(--color-iron-grey-800);
+        --color-background-secondary: var(--color-iron-grey-900);
+        --color-input-border: var(--color-iron-grey-700);
+        --color-text: var(--color-iron-grey-100);
+        --color-text-hover: var(--color-iron-grey-50);
+        --color-toast: var(--color-rich-cerulean-900);
+    }
+}
+
+@layer components {
+    .btn {
+        @apply focus-visible:ring-cobalt-blue-500/50 inline-flex cursor-pointer items-center justify-center gap-1.5 rounded-md
+            px-3 py-1.5 text-sm font-medium whitespace-nowrap
+            transition-all duration-150 select-none focus:outline-none
+            focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50;
+    }
+    .btn-sm {
+        @apply gap-1 px-2 py-1 text-xs;
+    }
+    .btn-primary {
+        @apply bg-cobalt-blue-600 hover:bg-cobalt-blue-500 active:bg-cobalt-blue-700
+            text-white shadow-sm;
+    }
+    .btn-secondary {
+        @apply border-input-border bg-background-secondary text-text hover:bg-background-hover
+            hover:border-iron-grey-300 dark:hover:border-iron-grey-600 border;
+    }
+    .btn-ghost {
+        @apply text-text/60 hover:text-text hover:bg-background-hover;
+    }
+    .btn-danger {
+        @apply text-red-500 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400;
+    }
+
+    .field {
+        @apply border-input-border bg-background text-text placeholder:text-text/40 focus:border-cobalt-blue-500 focus:ring-cobalt-blue-500/25 w-full
+            rounded-md border px-3 py-1.5 text-sm
+            transition-colors duration-150 focus:ring-2 focus:outline-none;
+    }
+
+    .card {
+        @apply border-input-border/70 bg-background-secondary rounded-xl border shadow-sm;
+    }
+
+    .label {
+        @apply text-text/50 text-[0.7rem] font-semibold tracking-[0.14em] uppercase;
+    }
+
+    .badge {
+        @apply bg-rich-cerulean-100 text-rich-cerulean-700 dark:bg-rich-cerulean-900 dark:text-rich-cerulean-200 inline-flex items-center rounded
+            px-1.5 py-0.5 text-[0.65rem] font-semibold
+            tracking-wide uppercase;
+    }
+}
