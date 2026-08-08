@@ -190,7 +190,9 @@ pub async fn disable_encryption(
     migrated.iter_mut().for_each(Zeroize::zeroize);
 
     settings.encryption = None;
-    write_settings(&app, &settings)?;
+    let settings_snapshot = settings.clone();
+    drop(settings);
+    write_settings(&app, &settings_snapshot)?;
 
     guarded_vault.recipient = None;
     guarded_vault.identity = None;
@@ -369,8 +371,11 @@ pub async fn set_auto_lock(
     settings_state: State<'_, SettingsState>,
     minutes: u64
 ) -> Result<(), AppError> {
-    let mut settings = settings_state.write();
-    settings.auto_lock_minutes = minutes;
+    let settings = {
+        let mut settings = settings_state.write();
+        settings.auto_lock_minutes = minutes;
+        settings.clone()
+    };
     write_settings(&app, &settings)
 }
 
@@ -381,9 +386,12 @@ pub async fn set_retention(
     amount: u64,
     unit: RetentionUnit,
 ) -> Result<(), AppError> {
-    let mut settings = settings_state.write();
-    settings.retention_amount = amount;
-    settings.retention_unit = unit;
+    let settings = {
+        let mut settings = settings_state.write();
+        settings.retention_amount = amount;
+        settings.retention_unit = unit;
+        settings.clone()
+    };
     write_settings(&app, &settings)?;
 
     Ok(())
@@ -445,7 +453,9 @@ pub async fn setup_encryption(
     write_history(&app, &migrated)?;
 
     settings.encryption = Some(config);
-    write_settings(&app, &settings)?;
+    let settings_snapshot = settings.clone();
+    drop(settings);
+    write_settings(&app, &settings_snapshot)?;
 
     guarded_vault.recipient = Some(recipient);
     guarded_vault.identity = Some(Arc::new(identity));
@@ -504,7 +514,9 @@ pub async fn wipe_and_reset(
         *last_hash.lock() = None;
 
         settings.encryption = None;
-        write_settings(&app, &settings)?;
+        let settings_snapshot = settings.clone();
+        drop(settings);
+        write_settings(&app, &settings_snapshot)?;
 
         guarded_vault.recipient = None;
         guarded_vault.identity = None;
