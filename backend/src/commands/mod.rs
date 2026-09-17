@@ -406,7 +406,6 @@ pub async fn search_history(
                 match hit {
                     Some(obj) => object_contains(&Zeroizing::new(obj).content, &terms),
                     None => {
-                        #[cfg(debug_assertions)]
                         let identity = identity.as_ref().ok_or(AppError::Locked)?;
                         let payload = Zeroizing::new(e.decrypt_with_identity(identity)?);
                         object_contains(&payload.content, &terms)
