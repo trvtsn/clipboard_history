@@ -1,24 +1,59 @@
+use crate::cache::{DecryptedCacheState, DecryptedPreviewCacheState};
 use crate::crypto::{
-    generate_config, parse_recipient, unlock_identity,
-    PlaintextPayload, EncryptedRecord, HistoryEntry, VaultState,
+    EncryptedRecord, HistoryEntry, PlaintextPayload, VaultState, generate_config, parse_recipient,
+    unlock_identity,
 };
 use crate::{
-    AppError, HistoryWriteLock, LastHashState, SettingsState, history_snapshot, wipe_history_cache,
-    write_history, write_settings,
+    AppError, CapturePaused, HistoryWriteLock, LastHashState, PauseMenuItem, SettingsState,
+    history_snapshot, wipe_history_cache, write_history, write_settings,
 };
-use crate::cache::{DecryptedCacheState, DecryptedPreviewCacheState};
-use std::sync::Arc;
-use std::time::Instant;
 use clipboard_history::constants::WIPE_CONFIRMATION_PHRASE;
 use clipboard_history::{
     AppSettings, CopiedObject, CopiedObjectPreview, EncryptionStatus, ObjectContent, ObjectFormat,
     RetentionUnit,
 };
-use clipboard_rs::{common::RustImage, Clipboard, ClipboardContext, RustImageData};
+use clipboard_rs::{Clipboard, ClipboardContext, RustImageData, common::RustImage};
+use rayon::prelude::*;
 use secrecy::{ExposeSecret, SecretString};
-use tauri::{AppHandle, State};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+#[cfg(debug_assertions)]
+use std::time::Instant;
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use zeroize::{Zeroize, Zeroizing};
+
+#[tauri::command]
+pub async fn capture_paused(state: State<'_, CapturePaused>) -> Result<bool, AppError> {
+    Ok(state.0.load(Ordering::Relaxed))
+}
+
+#[tauri::command]
+pub async fn set_capture_paused(
+    app: AppHandle,
+    state: State<'_, CapturePaused>,
+    settings_state: State<'_, SettingsState>,
+    paused: bool,
+) -> Result<(), AppError> {
+    state.0.store(paused, Ordering::Relaxed);
+
+    let settings = {
+        let mut settings = settings_state.write();
+        settings.capture_paused = paused;
+        settings.clone()
+    };
+    write_settings(&app, &settings)?;
+
+    if let Some(item) = app.try_state::<PauseMenuItem>() {
+        let item = item.0.clone();
+        let _ = app.run_on_main_thread(move || {
+            let _ = item.set_checked(paused);
+        });
+    }
+
+    let _ = app.emit("capture_paused_changed", paused);
+    Ok(())
+}
 
 #[tauri::command]
 pub async fn clear_history(
@@ -59,7 +94,11 @@ pub async fn copy_to_clipboard(
 
     let decrypted;
     let (content, content_format, formatted_content) = match entry {
-        HistoryEntry::Plain(o) => (&o.content, &o.content_format, o.formatted_content.as_deref()),
+        HistoryEntry::Plain(o) => (
+            &o.content,
+            &o.content_format,
+            o.formatted_content.as_deref(),
+        ),
         HistoryEntry::Encrypted(e) => {
             let guarded_vault = vault.read();
             let identity = guarded_vault.identity.as_ref().ok_or(AppError::Locked)?;
@@ -132,71 +171,12 @@ pub async fn delete_from_history(
     let before = history.len();
     history.retain(|item| item.id() != id);
     if history.len() == before {
-        return Err(AppError::Custom(format!("No item with id: {id} in history")));
+        return Err(AppError::Custom(format!(
+            "No item with id: {id} in history"
+        )));
     }
 
     write_history(&app, &history)
-}
-
-#[tauri::command]
-pub async fn disable_encryption(
-    app: AppHandle,
-    vault: State<'_, VaultState>,
-    history_write_lock: State<'_, HistoryWriteLock>,
-    settings_state: State<'_, SettingsState>,
-    password: SecretString,
-) -> Result<(), AppError> {
-    let cfg = {
-        let settings = settings_state.read();
-        settings
-            .encryption
-            .clone()
-            .ok_or_else(|| AppError::Custom("Encryption is not enabled".into()))?
-    };
-
-    let identity = unlock_identity(&cfg, password)?;
-
-    let mut settings = settings_state.write();
-    let Some(ref current_cfg) = settings.encryption else {
-        return Err(AppError::Custom("Encryption is not enabled".into()));
-    };
-
-    if cfg != *current_cfg {
-        return Err(AppError::EncryptionReconfigured);
-    }
-
-    let _h = history_write_lock.lock();
-    let mut guarded_vault = vault.write();
-
-    let history = Arc::unwrap_or_clone(history_snapshot(&app)?);
-    let mut migrated = Vec::with_capacity(history.len());
-    for entry in history {
-        match entry {
-            HistoryEntry::Plain(o) => migrated.push(HistoryEntry::Plain(o)),
-            HistoryEntry::Encrypted(e) => {
-                let payload = Zeroizing::new(e.decrypt_with_identity(&identity)?);
-                migrated.push(HistoryEntry::Plain(CopiedObject {
-                    id: payload.authoritative_id(&e),
-                    date: payload.authoritative_date(&e),
-                    content: payload.content.clone(),
-                    content_format: payload.content_format.clone(),
-                    thumbnail: payload.thumbnail.clone(),
-                    formatted_content: payload.formatted_content.clone(),
-                }));
-            }
-        }
-    }
-    write_history(&app, &migrated)?;
-    migrated.iter_mut().for_each(Zeroize::zeroize);
-
-    settings.encryption = None;
-    let settings_snapshot = settings.clone();
-    drop(settings);
-    write_settings(&app, &settings_snapshot)?;
-
-    guarded_vault.recipient = None;
-    guarded_vault.identity = None;
-    Ok(())
 }
 
 #[tauri::command]
@@ -281,6 +261,9 @@ pub async fn load_history(
     let mut out = Vec::with_capacity(history.len());
     let mut repairs: Vec<(usize, u32, u64)> = Vec::new();
 
+    #[cfg(debug_assertions)]
+    let timer = Instant::now();
+
     for (idx, entry) in history.iter().enumerate() {
         if let Some(preview) = preview_cache.lock().get(entry.id()) {
             out.push(preview);
@@ -294,11 +277,11 @@ pub async fn load_history(
                 let payload = encrypted_record.decrypt_with_identity(identity)?;
                 let auth_id = payload.authoritative_id(encrypted_record);
                 let auth_date = payload.authoritative_date(encrypted_record);
-                // eprintln!("auth_id: {auth_id}, e.id: {}, auth_date: {auth_date}, e.date: {}", e.id, e.date);
+
                 if auth_id != encrypted_record.id || auth_date != encrypted_record.date {
-                    // eprintln!("({idx}, {auth_id}, {auth_date})");
                     repairs.push((idx, auth_id, auth_date));
                 }
+
                 let mut full = CopiedObject {
                     id: auth_id,
                     content: payload.content,
@@ -316,6 +299,14 @@ pub async fn load_history(
         preview_cache.lock().insert(preview.id, preview.clone());
         out.push(preview);
     }
+
+    #[cfg(debug_assertions)]
+    println!(
+        "load_history: {} entries, {:?} on {} threads",
+        history.len(),
+        timer.elapsed(),
+        rayon::current_num_threads()
+    );
 
     if !repairs.is_empty() {
         #[cfg(debug_assertions)]
@@ -365,11 +356,87 @@ pub fn reveal_in_directory(app: AppHandle, path: String) -> Result<(), AppError>
         .map_err(|e| AppError::Custom(e.to_string()))
 }
 
+fn object_contains(content: &ObjectContent, terms: &[String]) -> bool {
+    let content = match content {
+        ObjectContent::Text(content) | ObjectContent::Html(content) | ObjectContent::Rtf(content) => content.to_lowercase(),
+        ObjectContent::Files(files) => files.join("\n").to_lowercase(),
+        ObjectContent::Image(_) => return false,
+        ObjectContent::Other(_, _) => return false
+    };
+
+    terms.into_iter().all(|term| content.contains(term))
+}
+
+#[tauri::command]
+pub async fn search_history(
+    app: AppHandle,
+    vault: State<'_, VaultState>,
+    decrypted_cache: State<'_, DecryptedCacheState>,
+    query: String,
+) -> Result<Vec<u32>, AppError> {
+    let history = history_snapshot(&app)?;
+    let terms = query
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect::<Vec<String>>();
+
+    if terms.is_empty() {
+        return Ok(history.iter().map(HistoryEntry::id).collect());
+    }
+
+    let identity = {
+        let guarded_vault = vault.read();
+        if guarded_vault.recipient.is_some() && guarded_vault.identity.is_none() {
+            return Err(AppError::Locked);
+        }
+        guarded_vault.identity.clone()
+    };
+
+    let cache = &*decrypted_cache;
+
+    #[cfg(debug_assertions)]
+    let timer = Instant::now();
+
+    let ids = history.par_iter().map(|entry| -> Result<Option<u32>, AppError> {
+        let matched = match entry {
+            HistoryEntry::Plain(o) => object_contains(&o.content, &terms),
+            HistoryEntry::Encrypted(e) => {
+                let hit = cache.lock().get(e.id);
+                match hit {
+                    Some(obj) => object_contains(&Zeroizing::new(obj).content, &terms),
+                    None => {
+                        #[cfg(debug_assertions)]
+                        let identity = identity.as_ref().ok_or(AppError::Locked)?;
+                        let payload = Zeroizing::new(e.decrypt_with_identity(identity)?);
+                        object_contains(&payload.content, &terms)
+                    }
+                }
+            }
+        };
+
+        Ok(matched.then(|| entry.id()))
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+    let ids = ids.into_iter().flatten().collect::<Vec<u32>>();
+
+    #[cfg(debug_assertions)]
+    println!(
+        "search_history: {} entries, {} matched, {:?} on {} threads",
+        history.len(),
+        ids.len(),
+        timer.elapsed(),
+        rayon::current_num_threads()
+    );
+    
+    Ok(ids)
+}
+
 #[tauri::command]
 pub async fn set_auto_lock(
-    app: AppHandle, 
+    app: AppHandle,
     settings_state: State<'_, SettingsState>,
-    minutes: u64
+    minutes: u64,
 ) -> Result<(), AppError> {
     let settings = {
         let mut settings = settings_state.write();
@@ -428,10 +495,15 @@ pub async fn setup_encryption(
     let mut guarded_vault = vault.write();
 
     let history = Arc::unwrap_or_clone(history_snapshot(&app)?);
-    let mut migrated = Vec::with_capacity(history.len());
-    for entry in history {
+    
+    #[cfg(debug_assertions)]
+    let (timer, total_entries) = (Instant::now(), history.len());
+
+    let migrated = history.into_par_iter().map(|entry| -> Result<HistoryEntry, AppError> {
         match entry {
-            HistoryEntry::Encrypted(encrypted_record) => migrated.push(HistoryEntry::Encrypted(encrypted_record)),
+            HistoryEntry::Encrypted(encrypted_record) => {
+                Ok(HistoryEntry::Encrypted(encrypted_record))
+            }
             HistoryEntry::Plain(copied_object) => {
                 let payload = Zeroizing::new(PlaintextPayload {
                     id: Some(copied_object.id),
@@ -442,14 +514,23 @@ pub async fn setup_encryption(
                     formatted_content: copied_object.formatted_content,
                 });
                 let ciphertext = payload.encrypt_to_recipient(&recipient)?;
-                migrated.push(HistoryEntry::Encrypted(EncryptedRecord {
+                Ok(HistoryEntry::Encrypted(EncryptedRecord {
                     id: copied_object.id,
                     date: copied_object.date,
                     ciphertext,
-                }));
+                }))
             }
         }
-    }
+    }).collect::<Result<Vec<_>, _>>()?;
+
+    #[cfg(debug_assertions)]
+    println!(
+        "setup_encryption: {} entries, {:?} on {} threads",
+        total_entries,
+        timer.elapsed(),
+        rayon::current_num_threads()
+    );
+
     write_history(&app, &migrated)?;
 
     settings.encryption = Some(config);
@@ -459,6 +540,80 @@ pub async fn setup_encryption(
 
     guarded_vault.recipient = Some(recipient);
     guarded_vault.identity = Some(Arc::new(identity));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn disable_encryption(
+    app: AppHandle,
+    vault: State<'_, VaultState>,
+    history_write_lock: State<'_, HistoryWriteLock>,
+    settings_state: State<'_, SettingsState>,
+    password: SecretString,
+) -> Result<(), AppError> {
+    let cfg = {
+        let settings = settings_state.read();
+        settings
+            .encryption
+            .clone()
+            .ok_or_else(|| AppError::Custom("Encryption is not enabled".into()))?
+    };
+
+    let identity = unlock_identity(&cfg, password)?;
+
+    let mut settings = settings_state.write();
+    let Some(ref current_cfg) = settings.encryption else {
+        return Err(AppError::Custom("Encryption is not enabled".into()));
+    };
+
+    if cfg != *current_cfg {
+        return Err(AppError::EncryptionReconfigured);
+    }
+
+    let _h = history_write_lock.lock();
+    let mut guarded_vault = vault.write();
+
+    let history = Arc::unwrap_or_clone(history_snapshot(&app)?);
+
+    #[cfg(debug_assertions)]
+    let (timer, total_entries) = (Instant::now(), history.len());
+
+    let mut migrated = history.into_par_iter().map(|entry| -> Result<HistoryEntry, AppError> {
+        match entry {
+            HistoryEntry::Plain(o) => Ok(HistoryEntry::Plain(o)),
+            HistoryEntry::Encrypted(e) => {
+                let payload = Zeroizing::new(e.decrypt_with_identity(&identity)?);
+                Ok(HistoryEntry::Plain(CopiedObject {
+                    id: payload.authoritative_id(&e),
+                    date: payload.authoritative_date(&e),
+                    content: payload.content.clone(),
+                    content_format: payload.content_format.clone(),
+                    thumbnail: payload.thumbnail.clone(),
+                    formatted_content: payload.formatted_content.clone(),
+                }))
+            }
+        }
+    })
+    .collect::<Result<Vec<_>, _>>()?;
+
+    #[cfg(debug_assertions)]
+    println!(
+        "disable_encryption: {} entries, {:?} on {} threads",
+        total_entries,
+        timer.elapsed(),
+        rayon::current_num_threads()
+    );
+
+    write_history(&app, &migrated)?;
+    migrated.iter_mut().for_each(Zeroize::zeroize);
+
+    settings.encryption = None;
+    let settings_snapshot = settings.clone();
+    drop(settings);
+    write_settings(&app, &settings_snapshot)?;
+
+    guarded_vault.recipient = None;
+    guarded_vault.identity = None;
     Ok(())
 }
 
@@ -500,8 +655,8 @@ pub async fn wipe_and_reset(
         ));
     }
 
-    // To be honest I don't really like doing blocks like this, I think they just look kinda ugly, 
-    // but I will still leave this here for now as this is generally sufficient enough. The goal 
+    // To be honest I don't really like doing blocks like this, I think they just look kinda ugly,
+    // but I will still leave this here for now as this is generally sufficient enough. The goal
     // is to make the locks not persist even during the KDF's of setup_encryption.
     {
         let mut settings = settings_state.write();
@@ -522,7 +677,9 @@ pub async fn wipe_and_reset(
         guarded_vault.identity = None;
     }
 
-    if let Some(pw) = new_password && !pw.expose_secret().is_empty() {
+    if let Some(pw) = new_password
+        && !pw.expose_secret().is_empty()
+    {
         setup_encryption(app, vault, history_write_lock, settings_state, pw).await?;
     }
     Ok(())

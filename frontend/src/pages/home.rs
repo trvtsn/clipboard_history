@@ -1,10 +1,12 @@
-use crate::{components::utils::DimmingOverlay, Page, SortBy, SortOrder, format_date, format_full, format_kind, format_preview, refresh_encryption_status};
+use crate::{components::utils::{DimmingOverlay, FORMAT_CHIPS}, Page, SortBy, SortOrder, format_date, format_full, format_kind, format_preview, refresh_encryption_status};
 use clipboard_history::{AppError, CopiedObject, CopiedObjectPreview, EncryptionStatus};
 use futures::StreamExt;
 use icondata as i;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_icons::Icon;
+use leptos_use::signal_debounced;
+use std::collections::HashSet;
 use tauri_sys::core::invoke_result;
 
 #[component]
@@ -12,6 +14,9 @@ pub fn Home() -> impl IntoView {
     let history = RwSignal::new(Vec::<CopiedObjectPreview>::new());
     let sort_by = RwSignal::new(SortBy::Date);
     let sort_order = RwSignal::new(SortOrder::Descending);
+    let search_query = RwSignal::new(String::new());
+    let search_results = RwSignal::new(Option::<HashSet<u32>>::None);
+    let format_filter = RwSignal::new(HashSet::<&'static str>::new());
     let page = expect_context::<RwSignal<Page>>();
     let status = expect_context::<RwSignal<Option<EncryptionStatus>>>();
     let opened_object = RwSignal::new(Option::<u32>::None);
@@ -48,10 +53,43 @@ pub fn Home() -> impl IntoView {
                 history
             }
         };
-        if sort_order == SortOrder::Ascending { history_sorted } else { 
+        if sort_order == SortOrder::Ascending { history_sorted } else {
             history_sorted.reverse();
             history_sorted
         }
+    });
+
+    let search_query_debounced: Signal<String> = signal_debounced(search_query, 250.0);
+    Effect::new(move |_| {
+        let debounced = search_query_debounced.get();
+        let _ = history.get(); // tracking history as well so that we update on newly copied/deleted objects
+
+        let query = debounced.trim().to_string();
+        if query.is_empty() {
+            search_results.set(None);
+            return;
+        }
+        
+        spawn_local(async move {
+            if let Ok(ids) = invoke_result::<Vec<u32>, AppError>("search_history", &serde_json::json!({ "query": query })).await
+                && search_query_debounced.get_untracked().trim() == query
+            {
+                search_results.set(Some(ids.into_iter().collect()));
+            }
+        });
+    });
+
+    let history_filtered = Memo::new(move |_| {
+        let filters = format_filter.get();
+        let results = search_results.get();
+        history_sorted
+            .get()
+            .into_iter()
+            .filter(|item| {
+                (filters.is_empty() || filters.contains(format_kind(item)))
+                    && results.as_ref().is_none_or(|ids| ids.contains(&item.id))
+            })
+            .collect::<Vec<_>>()
     });
 
     view! {
@@ -122,8 +160,50 @@ pub fn Home() -> impl IntoView {
                 </div>
             </header>
 
-            <div class="mb-3 flex items-center gap-2">
-                <span class="label mr-1">"Sort"</span>
+            <div class="mb-3 flex flex-wrap items-center gap-2">
+                <div class="relative">
+                    <span class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-text/40">
+                        <Icon icon=i::LuSearch />
+                    </span>
+                    <input
+                        class="field w-56 pl-8"
+                        type="search"
+                        placeholder="Search..."
+                        prop:value=move || search_query.get()
+                        on:input=move |ev| search_query.set(event_target_value(&ev))
+                    />
+                </div>
+
+                <div class="flex items-center gap-1">
+                    <button
+                        class="btn btn-sm"
+                        class:btn-secondary=move || format_filter.get().is_empty()
+                        class:btn-ghost=move || !format_filter.get().is_empty()
+                        on:click=move |_| format_filter.update(HashSet::clear)
+                    >"All"</button>
+                    {FORMAT_CHIPS
+                        .into_iter()
+                        .map(|(key, label)| {
+                            let active = move || format_filter.get().contains(key);
+                            view! {
+                                <button
+                                    class="btn btn-sm"
+                                    class:btn-secondary=active
+                                    class:btn-ghost=move || !active()
+                                    on:click=move |_| {
+                                        format_filter.update(|filters| {
+                                            if !filters.remove(key) {
+                                                filters.insert(key);
+                                            }
+                                        });
+                                    }
+                                >{label}</button>
+                            }
+                        })
+                        .collect_view()}
+                </div>
+
+                <span class="label ml-auto mr-1">"Sort"</span>
                 <select
                     class="field w-auto"
                     prop:value=move || match sort_by.get() {
@@ -163,14 +243,21 @@ pub fn Home() -> impl IntoView {
                 </select>
             </div>
 
-            <Show when=move || history_sorted.get().is_empty()>
+            <Show when=move || history.get().is_empty()>
                 <div class="card flex flex-col items-center justify-center gap-1 px-6 py-16 text-center">
                     <p class="text-sm font-medium text-text/70">"Nothing copied yet"</p>
                     <p class="text-xs text-text/40">"Items you copy will show up here."</p>
                 </div>
             </Show>
 
-            <Show when=move || !history_sorted.get().is_empty()>
+            <Show when=move || !history.get().is_empty() && history_filtered.get().is_empty()>
+                <div class="card flex flex-col items-center justify-center gap-1 px-6 py-16 text-center">
+                    <p class="text-sm font-medium text-text/70">"No matches"</p>
+                    <p class="text-xs text-text/40">"Try a different search or filter."</p>
+                </div>
+            </Show>
+
+            <Show when=move || !history_filtered.get().is_empty()>
                 <div class="card overflow-hidden">
                     <table class="w-full table-fixed border-collapse text-sm">
                         <thead>
@@ -183,7 +270,7 @@ pub fn Home() -> impl IntoView {
                         </thead>
                         <tbody>
                             <For
-                                each=move || history_sorted.get()
+                                each=move || history_filtered.get()
                                 key=|item: &CopiedObjectPreview| item.id
                                 children={move |item| {
                                     let id = item.id;

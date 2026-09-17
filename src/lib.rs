@@ -117,6 +117,8 @@ pub struct AppSettings {
     pub auto_lock_minutes: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub encryption: Option<EncryptionConfig>,
+    #[serde(default)]
+    pub capture_paused: bool
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -204,6 +206,7 @@ impl Default for AppSettings {
             retention_unit: RetentionUnit::default(),
             auto_lock_minutes: 5,
             encryption: None,
+            capture_paused: false
         }
     }
 }

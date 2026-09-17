@@ -1,5 +1,6 @@
 use crate::{Page, refresh_encryption_status};
 use clipboard_history::{AppError, AppSettings, EncryptionStatus, RetentionUnit};
+use futures::StreamExt;
 use icondata as i;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -26,11 +27,28 @@ pub fn Settings() -> impl IntoView {
     let auto_lock_minutes = expect_context::<RwSignal<u64>>();
     let auto_lock_status = RwSignal::new(String::new());
 
+    let capture_paused = RwSignal::new(false);
+
     spawn_local(async move {
         if let Ok(s) = invoke_result::<AppSettings, AppError>("load_settings", &()).await {
             retention_amount.set(s.retention_amount);
             retention_unit.set(s.retention_unit);
             auto_lock_minutes.set(s.auto_lock_minutes);
+        }
+    });
+
+    spawn_local(async move {
+        if let Ok(paused) = invoke_result::<bool, AppError>("capture_paused", &()).await {
+            capture_paused.set(paused);
+        }
+    });
+
+    // Stay in sync when capture is toggled from the tray menu.
+    spawn_local(async move {
+        if let Ok(mut stream) = tauri_sys::event::listen::<bool>("capture_paused_changed").await {
+            while let Some(ev) = stream.next().await {
+                capture_paused.set(ev.payload);
+            }
         }
     });
 
@@ -119,34 +137,71 @@ pub fn Settings() -> impl IntoView {
 
                 <div class="h-px bg-input-border/60"></div>
 
+                <Show when=move || encryption_status.get().is_some_and(|s| s.enabled)>
+                    <section class="space-y-3">
+                        <h2 class="text-base font-semibold tracking-tight">"Auto-lock"</h2>
+                        <p class="text-sm text-text/55">"Lock the vault after this many minutes of inactivity. Set to 0 to disable."</p>
+                        <div class="flex items-center gap-2">
+                            <input
+                                class="field w-20"
+                                type="number"
+                                min="0"
+                                prop:value=move || auto_lock_minutes.get().to_string()
+                                on:input=move |ev| {
+                                    let value = event_target_value(&ev);
+                                    auto_lock_minutes.set(value.parse::<u64>().unwrap_or(0));
+                                }
+                            />
+                            <span class="text-sm text-text/60">"minutes"</span>
+                            <button class="btn btn-primary" on:click=move |_| {
+                                let minutes = auto_lock_minutes.get();
+                                spawn_local(async move {
+                                    match invoke_result::<(), AppError>("set_auto_lock", &serde_json::json!({ "minutes": minutes })).await {
+                                        Ok(_) => auto_lock_status.set("Saved.".into()),
+                                        Err(e) => auto_lock_status.set(e.to_string()),
+                                    }
+                                });
+                            }>"Save"</button>
+                            <Show when=move || !auto_lock_status.get().is_empty()>
+                                <span class="text-xs text-text/50">{move || auto_lock_status.get()}</span>
+                            </Show>
+                        </div>
+                    </section>
+                </Show>
+
+                <div class="h-px bg-input-border/60"></div>
+
                 <section class="space-y-3">
-                    <h2 class="text-base font-semibold tracking-tight">"Auto-lock"</h2>
-                    <p class="text-sm text-text/55">"Lock the vault after this many minutes of inactivity. Set to 0 to disable. Only applies when encryption is enabled."</p>
-                    <div class="flex items-center gap-2">
-                        <input
-                            class="field w-20"
-                            type="number"
-                            min="0"
-                            prop:value=move || auto_lock_minutes.get().to_string()
-                            on:input=move |ev| {
-                                let value = event_target_value(&ev);
-                                auto_lock_minutes.set(value.parse::<u64>().unwrap_or(0));
-                            }
-                        />
-                        <span class="text-sm text-text/60">"minutes"</span>
-                        <button class="btn btn-primary" on:click=move |_| {
-                            let minutes = auto_lock_minutes.get();
+                    <h2 class="text-base font-semibold tracking-tight">"Pause capture"</h2>
+                    <p class="text-sm text-text/55">
+                        "Pause clipboard capture. Nothing you copy is saved to history while paused. Persists across restarts."
+                    </p>
+                    <p class="text-sm text-text/70">
+                        "Capture is "
+                        {move || if capture_paused.get() {
+                            view! { <span class="font-semibold text-amber-500">"paused"</span> }.into_any()
+                        } else {
+                            view! { <span class="font-semibold text-rich-cerulean-500">"active"</span> }.into_any()
+                        }}
+                        "."
+                    </p>
+                    <button
+                        class="btn btn-secondary"
+                        on:click=move |_| {
+                            let paused = !capture_paused.get_untracked();
                             spawn_local(async move {
-                                match invoke_result::<(), AppError>("set_auto_lock", &serde_json::json!({ "minutes": minutes })).await {
-                                    Ok(_) => auto_lock_status.set("Saved.".into()),
-                                    Err(e) => auto_lock_status.set(e.to_string()),
+                                if invoke_result::<(), AppError>("set_capture_paused", &serde_json::json!({ "paused": paused })).await.is_ok() {
+                                    capture_paused.set(paused);
                                 }
                             });
-                        }>"Save"</button>
-                        <Show when=move || !auto_lock_status.get().is_empty()>
-                            <span class="text-xs text-text/50">{move || auto_lock_status.get()}</span>
-                        </Show>
-                    </div>
+                        }
+                    >
+                        {move || if capture_paused.get() {
+                            view! { <Icon icon=i::LuPlay /> "Resume capture" }.into_any()
+                        } else {
+                            view! { <Icon icon=i::LuPause /> "Pause capture" }.into_any()
+                        }}
+                    </button>
                 </section>
 
                 <div class="h-px bg-input-border/60"></div>

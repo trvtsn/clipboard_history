@@ -6,6 +6,15 @@ pub enum ComponentSize {
     Big,
 }
 
+pub const FORMAT_CHIPS: [(&str, &str); 6] = [
+    ("text", "Text"),
+    ("rtf", "RTF"),
+    ("html", "HTML"),
+    ("image", "Image"),
+    ("files", "Files"),
+    ("other", "Other"),
+];
+
 // Thanks to devAaus (https://github.com/devAaus)
 // https://uiverse.io/devAaus/funny-catfish-94
 #[component]

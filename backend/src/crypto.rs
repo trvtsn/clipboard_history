@@ -1,16 +1,14 @@
 use crate::AppError;
 use age::secrecy::{ExposeSecret, SecretString};
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
-use clipboard_history::{
-    CopiedObject, EncryptionConfig, ObjectContent, ObjectFormat,
-};
+use base64::{Engine, engine::general_purpose::STANDARD as B64};
+use clipboard_history::{CopiedObject, EncryptionConfig, ObjectContent, ObjectFormat};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use parking_lot::RwLock;
-use zeroize::{Zeroize, Zeroizing};
 use std::io::{Read, Write};
 use std::str::FromStr;
 use std::sync::Arc;
+use zeroize::{Zeroize, Zeroizing};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
@@ -41,12 +39,16 @@ pub struct PlaintextPayload {
 
 #[derive(Default)]
 pub struct Vault {
+    /// Public key; It's `Some` whenever encryption is enabled, 
+    /// `None` whenever encryption is disabled.
     pub recipient: Option<age::x25519::Recipient>,
+    /// Private key; It's `Some` whenever the vault is unlocked,
+    /// `None` whenever the vault is locked.
     pub identity: Option<Arc<age::x25519::Identity>>,
 }
 
 // RwLock as we're doing more reads than writes with this.
-/// Holds the values for 
+/// Holds the values for the keypair used to encrypt and decrypt history entries.
 pub type VaultState = RwLock<Vault>;
 
 pub fn content_hash(content: &ObjectContent) -> String {
@@ -85,7 +87,9 @@ pub fn content_hash(content: &ObjectContent) -> String {
     B64.encode(hasher.finalize())
 }
 
-pub fn generate_config(password: SecretString) -> Result<(EncryptionConfig, age::x25519::Identity), AppError> {
+pub fn generate_config(
+    password: SecretString,
+) -> Result<(EncryptionConfig, age::x25519::Identity), AppError> {
     let identity = age::x25519::Identity::generate();
     let recipient_str = identity.to_public().to_string();
     let identity_str = identity.to_string();
@@ -121,16 +125,15 @@ pub fn unlock_identity(
     let ciphertext = B64
         .decode(&config.encrypted_identity)
         .map_err(|e| AppError::Crypto(format!("base64: {e}")))?;
-    let decryptor = match age::Decryptor::new(&ciphertext[..])
-        .map_err(|e| AppError::Crypto(e.to_string()))?
-    {
-        age::Decryptor::Passphrase(d) => d,
-        age::Decryptor::Recipients(_) => {
-            return Err(AppError::Crypto(
-                "encrypted identity is not passphrase-encrypted".into(),
-            ))
-        }
-    };
+    let decryptor =
+        match age::Decryptor::new(&ciphertext[..]).map_err(|e| AppError::Crypto(e.to_string()))? {
+            age::Decryptor::Passphrase(d) => d,
+            age::Decryptor::Recipients(_) => {
+                return Err(AppError::Crypto(
+                    "encrypted identity is not passphrase-encrypted".into(),
+                ));
+            }
+        };
     let mut reader = decryptor
         .decrypt(&password, None)
         .map_err(|_| AppError::BadPassword)?;
@@ -143,7 +146,10 @@ pub fn unlock_identity(
 }
 
 impl EncryptedRecord {
-    pub fn decrypt_with_identity(&self, identity: &age::x25519::Identity) -> Result<PlaintextPayload, AppError> {
+    pub fn decrypt_with_identity(
+        &self,
+        identity: &age::x25519::Identity,
+    ) -> Result<PlaintextPayload, AppError> {
         let ciphertext = B64
             .decode(&self.ciphertext)
             .map_err(|e| AppError::Crypto(format!("base64: {e}")))?;
@@ -154,7 +160,7 @@ impl EncryptedRecord {
             age::Decryptor::Passphrase(_) => {
                 return Err(AppError::Crypto(
                     "ciphertext is passphrase-encrypted, not recipient-encrypted".into(),
-                ))
+                ));
             }
         };
         let mut plaintext = Zeroizing::new(Vec::new());
@@ -193,7 +199,10 @@ impl PlaintextPayload {
         self.date.unwrap_or(record.date)
     }
 
-    pub fn encrypt_to_recipient(&self, recipient: &age::x25519::Recipient) -> Result<String, AppError> {
+    pub fn encrypt_to_recipient(
+        &self,
+        recipient: &age::x25519::Recipient,
+    ) -> Result<String, AppError> {
         let plaintext = Zeroizing::new(serde_json::to_vec(self)?);
         let encryptor = age::Encryptor::with_recipients(vec![Box::new(recipient.clone())])
             .ok_or_else(|| AppError::Crypto("failed to build encryptor".into()))?;

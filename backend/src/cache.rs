@@ -1,28 +1,33 @@
-use std::{collections::{HashMap, VecDeque}, sync::Arc};
-use clipboard_history::{AppSettings, CopiedObject, CopiedObjectPreview, constants::cache::{MAX_ITEMS, PER_ITEM_MAX_BYTES, TOTAL_MAX_BYTES}};
+use clipboard_history::{
+    AppSettings, CopiedObject, CopiedObjectPreview,
+    constants::cache::{MAX_ITEMS, PER_ITEM_MAX_BYTES, TOTAL_MAX_BYTES},
+};
 use parking_lot::{Mutex, RwLock};
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 use tauri::{AppHandle, Manager};
 use zeroize::Zeroize;
 
 use crate::{SettingsState, crypto::HistoryEntry};
 
-// To-Do: Probably look into if Arc is actually needed/appropriate for this
 // RwLock as we're doing more reads than writes with this.
-/// Stores the entries from the history.json into memory. 
-/// Fetched once (from disk) on program startup, and once every unlock. 
+/// Stores the entries from the history.json into memory.
+/// Fetched once (from disk) on program startup, and once every unlock.
 /// Gets freed and zeroized on lock.
 pub type HistoryCacheState = RwLock<Option<Arc<Vec<HistoryEntry>>>>;
 
 // Mutex as we're doing more writes than reads with this.
-/// Stores decrypted entries from history. 
+/// Stores decrypted entries from history.
 /// Populates on every `get_full_content` call. Used to decrease loading times
-/// and avoid re-decrypting from disk whenever the full content of a history entry is queried. 
+/// and avoid re-decrypting from disk whenever the full content of a history entry is queried.
 /// Gets freed and zeroized on lock.
 pub type DecryptedCacheState = Mutex<DecryptedCache>;
 
 // Mutex as we're doing more writes than reads with this.
 /// Stores the decrypted previews (truncated text, minimized images).
-/// Populates on every `load_history` call. Used to decrease loading times 
+/// Populates on every `load_history` call. Used to decrease loading times
 /// and avoid re-decrypting from disk whenever the history table is rendered.
 /// Gets freed and zeroized on lock.
 pub type DecryptedPreviewCacheState = Mutex<DecryptedPreviewCache>;
@@ -164,4 +169,3 @@ pub fn write_settings_cache(app: &AppHandle, settings: &AppSettings) {
         *cache.write() = settings.clone();
     }
 }
-
